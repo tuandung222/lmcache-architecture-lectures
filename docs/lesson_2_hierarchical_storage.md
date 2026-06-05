@@ -68,4 +68,4 @@ GPU VRAM ──────────────(PCIe direct path)───�
 *   **Bypass CPU Host:** GDS cho phép di chuyển trực tiếp dữ liệu giữa GPU VRAM và ổ cứng NVMe thông qua PCIe bus mà không cần phải sao chép trung gian vào CPU RAM hay đi qua Page Cache của hệ điều hành.
 *   **Hiệu năng:** GDS giúp giảm tải CPU xuống gần bằng 0 và đạt đến băng thông tối đa của phần cứng NVMe SSD (lên tới hàng chục GB/s), cực kỳ hữu ích khi cần lưu hoặc tải các khối KV cache có kích thước hàng Gigabyte của các prompt cực dài (ví dụ: prompt 100k+ tokens).
 
-Trong bài học tiếp theo, chúng ta sẽ phân tích một ứng dụng nâng cao khác của LMCache là **Prefill-Decode Disaggregation (PD Disaggregation)** – cơ chế tách biệt các nút tính toán Prefill và Decode trên cụm server.
+Trong bài học tiếp theo, chúng ta sẽ phân tích một ứng dụng nâng cao khác của LMCache là **Prefill-Decode Disaggregation (PD Disaggregation)**, cơ chế tách biệt các nút tính toán Prefill và Decode trên cụm server.
