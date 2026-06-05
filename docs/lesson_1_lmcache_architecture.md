@@ -27,13 +27,13 @@ Khi ta có một khối *KV Cache* lưu trữ trên CPU RAM hoặc trên mạng 
 
 Tổng thời gian truy xuất và nạp *KV Cache* ($T_{\text{retrieve}}$) được xác định bằng tổng các thành phần:
 
-$$T_{\text{retrieve}} = T_{\text{lookup}} + T_{\text{fetch}} + T_{\text{deserialize}} + T_{\text{hbm_inject}}$$
+$$T_{\text{retrieve}} = T_{\text{lookup}} + T_{\text{fetch}} + T_{\text{deserialize}} + T_{\text{hbm\_inject}}$$
 
 Trong đó:
 * $T_{\text{lookup}}$: Thời gian truy vấn chỉ mục (mã băm) trong cơ sở dữ liệu token để xác định cache hit/miss.
 * $T_{\text{fetch}}$: Thời gian truyền tải vật lý các byte dữ liệu của tensor từ Storage Backend (CPU RAM, SSD, hoặc Redis qua mạng) vào bộ nhớ RAM tiến trình.
 * $T_{\text{deserialize}}$: Thời gian giải tuần tự hóa (*deserialization*), chuyển đổi luồng byte thô thành tensor PyTorch có cấu trúc và kiểu dữ liệu phù hợp.
-* $T_{\text{hbm_inject}}$: Thời gian ghi dữ liệu từ CPU RAM qua bus PCIe vào VRAM/HBM của GPU.
+* $T_{\text{hbm\_inject}}$: Thời gian ghi dữ liệu từ CPU RAM qua bus PCIe vào VRAM/HBM của GPU.
 
 Ngược lại, thời gian GPU tự tính toán lại pha Prefill cho đoạn tiền tố đó ($T_{\text{prefill}}$) được mô tả như sau:
 

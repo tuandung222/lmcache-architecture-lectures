@@ -34,12 +34,12 @@ Khi chiều dài ngữ cảnh (*context length*) tăng lên, dung lượng *KV C
 
 Để đánh giá chính xác tải hệ thống, chúng ta xây dựng công thức tính kích thước của *KV Cache* cho một yêu cầu duy nhất. Kích thước bộ đệm *KV Cache* ($S_{\text{kv}}$) tính bằng bytes được xác định bởi công thức sau:
 
-$$S_{\text{kv}} = 2 \times n_{\text{layers}} \times n_{\text{kv_heads}} \times d_{\text{head}} \times L_{\text{seq}} \times b_{\text{param}}$$
+$$S_{\text{kv}} = 2 \times n_{\text{layers}} \times n_{\text{kv\_heads}} \times d_{\text{head}} \times L_{\text{seq}} \times b_{\text{param}}$$
 
 Đọc công thức này theo nghĩa thực tế hệ thống:
 * Hằng số $2$ đại diện cho hai ma trận độc lập: ma trận *Key* ($K$) và ma trận *Value* ($V$).
 * $n_{\text{layers}}$: Số lượng lớp Transformer trong kiến trúc mô hình (ví dụ: Llama 3 8B có 32 lớp).
-* $n_{\text{kv_heads}}$: Số lượng đầu tính toán của ma trận KV. Trong cơ chế *Grouped-Query Attention (GQA)*, số lượng đầu KV nhỏ hơn số đầu Query ($n_{\text{kv_heads}} < n_{\text{q_heads}}$) để giảm bộ nhớ.
+* $n_{\text{kv\_heads}}$: Số lượng đầu tính toán của ma trận KV. Trong cơ chế *Grouped-Query Attention (GQA)*, số lượng đầu KV nhỏ hơn số đầu Query ($n_{\text{kv\_heads}} < n_{\text{q\_heads}}$) để giảm bộ nhớ.
 * $d_{\text{head}}$: Kích thước của mỗi đầu (*head dimension*, thường là 128).
 * $L_{\text{seq}}$: Chiều dài chuỗi token cần lưu trữ (bao gồm cả prompt và phần sinh thêm).
 * $b_{\text{param}}$: Số bytes chiếm dụng trên mỗi tham số tùy thuộc vào định dạng dữ liệu (ví dụ: FP16/BF16 chiếm 2 bytes, FP8 chiếm 1 byte).
@@ -47,7 +47,7 @@ $$S_{\text{kv}} = 2 \times n_{\text{layers}} \times n_{\text{kv_heads}} \times d
 ### 🔍 Ví dụ thực tế:
 Xét mô hình Llama-3-8B chạy ở định dạng BF16 ($b_{\text{param}} = 2$):
 * $n_{\text{layers}} = 32$
-* $n_{\text{kv_heads}} = 8$ (sử dụng GQA)
+* $n_{\text{kv\_heads}} = 8$ (sử dụng GQA)
 * $d_{\text{head}} = 128$
 * Chiều dài chuỗi $L_{\text{seq}} = 8,000$ tokens.
 
@@ -105,7 +105,7 @@ Trong codebase của LMCache, giao thức tương tác chính này được đi�
 
 Khi triển khai cơ chế chia sẻ *KV Cache* cho một cụm máy chủ, bạn cần thực hiện checklist đánh giá dung lượng bộ đệm sau:
 
-* [ ] **Xác định thông số mô hình**: Thu thập chính xác số layer ($n_{\text{layers}}$), số đầu KV ($n_{\text{kv_heads}}$), và head dimension ($d_{\text{head}}$).
+* [ ] **Xác định thông số mô hình**: Thu thập chính xác số layer ($n_{\text{layers}}$), số đầu KV ($n_{\text{kv\_heads}}$), và head dimension ($d_{\text{head}}$).
 * [ ] **Định mức kích thước ngữ cảnh trung bình**: Ước lượng chiều dài tiền tố dùng chung ($L_{\text{prefix}}$) và tổng chiều dài chuỗi sinh ra ($L_{\text{seq}}$).
 * [ ] **Tính toán giới hạn VRAM**: Áp dụng công thức $S_{\text{kv}}$ để xác định dung lượng cần thiết trên mỗi luồng sinh. Xác nhận xem dung lượng VRAM còn lại sau khi load mô hình có đủ chứa kích thước lô mục tiêu hay không.
 * [ ] **Đo lường thời gian Prefill**: Kiểm tra thời gian GPU chạy prefill ($T_{\text{prefill}}$) cho các độ dài prompt khác nhau để làm mốc so sánh với thời gian truyền tải mạng của *KV Cache*.
