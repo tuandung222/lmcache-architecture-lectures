@@ -48,7 +48,7 @@ Avoid casual language, slang, and jokes. The tone should be authoritative, acade
 
 For every important concept, follow this pedagogical flow:
 1. Start from a concrete hardware/system tension (e.g., VRAM constraints, network latency, PCIe bottleneck).
-2. Build mathematical intuition and explain system constraints.
+2. Build mathematical intuition, formulate equations (using LaTeX), and prove key terms.
 3. Show the corresponding clean pseudocode or architectural flow.
 4. Reference the actual file and function in `LMCache` where this is implemented.
 5. Provide actionable performance tuning checklists and practical implementation guides.
@@ -66,7 +66,13 @@ Use Mermaid diagrams to illustrate data flow, hierarchical caching states, commu
 
 ---
 
-## 6. Public privacy and safety constraints
+## 6. Source material and attribution policy
+
+The official `LMCache` repository is the source of truth for architectural details and implementation. Do not copy prose directly. Explain in original Vietnamese. Code snippets should be short and used only when they clarify a concept.
+
+---
+
+## 7. Public privacy and safety constraints
 
 `README.md` must remain empty (0 bytes). Do not add any characters or placeholders to it.
 
@@ -83,7 +89,7 @@ Privacy controls:
 
 ---
 
-## 7. Commands and verification
+## 8. Commands and verification
 
 Safe read-only or verification commands:
 - `npm run typecheck`: run TypeScript verification.
@@ -99,7 +105,7 @@ Commands requiring explicit approval/actions:
 
 ---
 
-## 8. Completion checklist
+## 9. Completion checklist
 
 Before reporting completion, verify the relevant items:
 - `README.md` is still 0 bytes.
@@ -109,17 +115,21 @@ Before reporting completion, verify the relevant items:
 - If pushed, the commit author and committer are the intended identity (`tuandung222`).
 - The deployed website returns `HTTP 200` on the live URL.
 - Search engine exclusions are active on the live site (verified through `robots.txt` disallowing `/` and `<meta name="robots" content="noindex..."/>` in page source).
+- `/sitemap.xml` should return 404.
 
 ---
 
-## 9. Repo specialization: LMCache Internals
+## 10. Repo specialization: LMCache Internals
+
+### Audience
+Write for people who already understand transformer inference but want to build or run state-of-the-art LLM serving clusters using caching.
 
 ### Learning promise
 A reader should finish this curriculum able to explain:
 - How LMCache extends vLLM and SGLang from single-GPU prefix reuse to cluster-wide sharing.
 - The precise architecture and data flow between the Frontend, Cache Engine, and Storage Backends.
 - The performance and overhead trade-offs of hierarchical storage (VRAM vs CPU RAM vs SSD vs Object Storage).
-- The inner workings of serialization and deserealization techniques for KV Cache tensors.
+- The inner workings of serialization and deserialization techniques for KV Cache tensors.
 - The mechanics of Prefill-Decode disaggregation using Transfer Channel.
 - How multi-process setups (Tensor Parallelism) avoid redundant caching operations using consolidated connectors.
 
@@ -128,3 +138,17 @@ A reader should finish this curriculum able to explain:
 - Offloading KV Cache to host RAM or Disk is not always faster; it is a latency-throughput trade-off that depends on prompt length and hardware speed (PCIe, GDS).
 - Sharing KV Cache across networks is beneficial only if the transfer latency is lower than the local compute latency (prefill time).
 - Serializing PyTorch tensors is not a free operation; memory pinning and native C++ implementations are required to avoid CPU page-faults and Python runtime bottlenecks.
+
+---
+
+## 11. Maintenance notes for future agents
+
+Keep this file concise enough to be read, but specific enough to guide action. If it becomes too long, split public teaching guidance into a student-facing authoring guide and keep operational constraints here.
+
+Update this file when:
+- commands change
+- directory structure changes
+- privacy or deployment posture changes
+- QA rules change
+- agents repeatedly make the same mistake
+- course scope expands in a stable way

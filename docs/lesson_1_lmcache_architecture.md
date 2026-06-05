@@ -5,87 +5,136 @@ sidebar_label: "Bài 1: Kiến trúc LMCache"
 
 # Bài 1: Chi tiết Kiến trúc Hệ thống LMCache
 
-Để cung cấp khả năng chia sẻ KV Cache hiệu năng cao trên quy mô cụm máy chủ, LMCache sử dụng thiết kế kiến trúc phân tầng gồm 3 lớp chính: **Frontend**, **Cache Engine**, và **Storage Backend**. Bài học này sẽ đi sâu phân tích sơ đồ kiến trúc tổng quan và chức năng của từng lớp trong mã nguồn LMCache.
+Để cung cấp khả năng chia sẻ *KV Cache* hiệu năng cao trên quy mô cụm máy chủ, LMCache sử dụng thiết kế kiến trúc phân tầng gồm 3 lớp chính: **Frontend**, **Cache Engine**, và **Storage Backend**. Bài học này sẽ đi sâu phân tích sơ đồ kiến trúc tổng quan và chức năng của từng lớp trong mã nguồn LMCache.
 
 ---
 
-## 1. Sơ đồ Kiến trúc Tổng quan (System Overview)
+## 1. Sự căng thẳng hệ thống: Thời gian truy xuất vs Thời gian tính toán lại (Systems Tension)
 
-Dưới đây là sơ đồ mô tả cách LMCache hoạt động và tương tác với Serving Engine (ví dụ: vLLM):
+Tại sao không phải lúc nào chia sẻ *KV Cache* cũng mang lại hiệu năng tốt hơn? Đó là do sự cân bằng động giữa thời gian truyền tải và thời gian tính toán lại trên GPU.
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    LLM serving engine (vLLM)                 │
-│  ┌───────────────────────┐       ┌────────────────────────┐  │
-│  │   vLLM Block Manager  │ ◄───► │   LMCache Connector    │  │
-│  └───────────────────────┘       └───────────┬────────────┘  │
-└──────────────────────────────────────────────┼───────────────┘
-                                               │ (API Calls)
-┌──────────────────────────────────────────────▼───────────────┐
-│                      LMCache Cache Engine                    │
-│  ┌───────────────────────┐       ┌────────────────────────┐  │
-│  │    Token Database     │       │    Event Manager       │  │
-│  └───────────────────────┘       └────────────────────────┘  │
-│  ┌───────────────────────┐       ┌────────────────────────┐  │
-│  │   Memory Manager      │       │    Lookup Client       │  │
-│  └───────────────────────┘       └────────────────────────┘  │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ (Read/Write)
-┌──────────────────────────────▼───────────────┐
-│                    LMCache Storage Backend                   │
-│  ┌───────────────────────┐       ┌────────────────────────┐  │
-│  │ Local Memory (CPU RAM)│       │ Local Disk (SSD/NVMe)  │  │
-│  └───────────────────────┘       └────────────────────────┘  │
-│  ┌───────────────────────┐       ┌────────────────────────┐  │
-│  │ Remote Storage (Redis)│       │ Peer-to-Peer Network   │  │
-│  └───────────────────────┘       └────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
+Khi ta có một khối *KV Cache* lưu trữ trên CPU RAM hoặc trên mạng (Redis):
+* Hệ thống sẽ tốn chi phí thời gian để kiểm tra cache, đóng gói dữ liệu, gửi qua mạng hoặc qua bus PCIe, giải nén và nạp vào bộ nhớ HBM của GPU.
+* Nếu tổng thời gian thực hiện luồng này lớn hơn thời gian GPU tự tính toán lại pha Prefill cho các token đó, việc dùng LMCache sẽ phản tác dụng và làm tăng tổng thời gian phản hồi (*latency*).
+
+Đây chính là **sự căng thẳng hệ thống (Systems Tension)**: Cần thiết kế một luồng xử lý cực kỳ tối ưu để thời gian truy xuất từ xa luôn nhỏ hơn thời gian tính toán cục bộ của GPU.
+
+---
+
+## 2. Mô hình toán học về Latency và hiệu quả Caching
+
+Để xác định xem việc truy xuất *KV Cache* từ LMCache có mang lại lợi ích hiệu năng hay không, ta xây dựng mô hình toán học so sánh thời gian.
+
+Tổng thời gian truy xuất và nạp *KV Cache* ($T_{\text{retrieve}}$) được xác định bằng tổng các thành phần:
+
+$$T_{\text{retrieve}} = T_{\text{lookup}} + T_{\text{fetch}} + T_{\text{deserialize}} + T_{\text{hbm_inject}}$$
+
+Trong đó:
+* $T_{\text{lookup}}$: Thời gian truy vấn chỉ mục (mã băm) trong cơ sở dữ liệu token để xác định cache hit/miss.
+* $T_{\text{fetch}}$: Thời gian truyền tải vật lý các byte dữ liệu của tensor từ Storage Backend (CPU RAM, SSD, hoặc Redis qua mạng) vào bộ nhớ RAM tiến trình.
+* $T_{\text{deserialize}}$: Thời gian giải tuần tự hóa (*deserialization*), chuyển đổi luồng byte thô thành tensor PyTorch có cấu trúc và kiểu dữ liệu phù hợp.
+* $T_{\text{hbm_inject}}$: Thời gian ghi dữ liệu từ CPU RAM qua bus PCIe vào VRAM/HBM của GPU.
+
+Ngược lại, thời gian GPU tự tính toán lại pha Prefill cho đoạn tiền tố đó ($T_{\text{prefill}}$) được mô tả như sau:
+
+$$T_{\text{prefill}} = \frac{L_{\text{seq}} \cdot C_{\text{compute}}}{P_{\text{compute}}} + T_{\text{overhead}}$$
+
+Trong đó:
+* $L_{\text{seq}}$: Độ dài chuỗi tiền tố (số lượng tokens).
+* $C_{\text{compute}}$: Số lượng FLOPs cần tính toán cho mỗi token trong pha Prefill (thường xấp xỉ $2 \times N_{\text{params}}$ của mô hình).
+* $P_{\text{compute}}$: Hiệu suất tính toán thực tế của GPU (FLOPs/s chạy ở tensor core).
+* $T_{\text{overhead}}$: Các chi phí cố định khác của runtime (lập lịch, cấp phát bộ nhớ của engine).
+
+### 💡 Điều kiện tối ưu:
+Hệ thống chỉ đạt hiệu năng cao khi và chỉ khi thỏa mãn bất đẳng thức:
+
+$$T_{\text{retrieve}} < T_{\text{prefill}}$$
+
+Bản chất của công thức nằm ở việc: Vì $T_{\text{prefill}}$ tăng tuyến tính theo chiều dài chuỗi $L_{\text{seq}}$ trong khi $T_{\text{retrieve}}$ chịu ảnh hưởng nhiều bởi các hằng số truyền tải vật lý, việc chia sẻ *KV Cache* sẽ cực kỳ hiệu quả đối với các ngữ cảnh rất dài (ví dụ: prompt > 1,000 tokens) và có thể không tối ưu cho các prompt quá ngắn.
+
+---
+
+## 3. Sơ đồ luồng điều khiển và dữ liệu (Control & Data Flow)
+
+Dưới đây là sơ đồ chi tiết luồng tương tác giữa các thành phần của LMCache khi một yêu cầu phục vụ được xử lý:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Engine as LLM serving engine (vLLM)
+    participant Connector as LMCache Connector
+    participant CacheEngine as LMCache Cache Engine
+    participant Storage as Storage Manager
+    participant Backend as Storage Backend (CPU/Disk/Redis)
+
+    Engine->>Connector: Gửi prompt tokens & slot mapping
+    Connector->>CacheEngine: lookup(tokens)
+    CacheEngine->>Storage: batched_contains(keys)
+    Storage->>Backend: Kiểm tra vật lý
+    Backend-->>Storage: Phản hồi trạng thái sẵn sàng
+    Storage-->>CacheEngine: Trả về khóa trùng khớp (Cache Hit)
+    CacheEngine-->>Connector: Xác nhận các khối sẵn có
+
+    alt Cache Hit
+        Connector->>CacheEngine: retrieve(tokens)
+        CacheEngine->>Storage: batched_get_blocking(keys)
+        Storage->>Backend: Đọc dữ liệu thô
+        Backend-->>Storage: Luồng byte thô
+        Storage->>CacheEngine: Trả về MemoryObj (CPU RAM)
+        CacheEngine->>Connector: Giải tuần tự hóa & chuyển sang GPU Connector
+        Connector->>Engine: Inject KV Cache vào GPU HBM
+    else Cache Miss
+        Engine->>Engine: GPU tự tính toán Prefill
+        Engine->>Connector: Trả về KV Cache vừa tính toán
+        Connector->>CacheEngine: store(tokens, kv_tensors)
+        CacheEngine->>Storage: batched_allocate() & lưu tạm MemoryObj
+        Connector->>CacheEngine: batched_from_gpu() nạp dữ liệu CPU
+        CacheEngine->>Storage: batched_put(keys, memory_objs)
+        Storage->>Backend: Ghi bất đồng bộ xuống lưu trữ vật lý
+    end
 ```
 
 ---
 
-## 2. Phân tích các thành phần kiến trúc
+## 4. Liên hệ mã nguồn: Khởi tạo Storage Manager
 
-### A. LMCache Frontend & Connectors (`lmcache/integration`)
-Lớp này đóng vai trò cầu nối, chịu trách nhiệm tích hợp LMCache trực tiếp vào luồng xử lý của Serving Engine.
-*   **Intercepting (Đánh chặn):** Khi Serving Engine lập lịch xử lý một request mới, Connector sẽ intercept phần prompt tokens và tính toán mã băm (hash value) của các tiền tố để truy vấn cache.
-*   **Cache Lookup:** Gửi yêu cầu kiểm tra xem KV Cache của phần tiền tố đó đã tồn tại trên LMCache chưa bằng hàm `lookup()`.
-*   **Retrieve & Inject:** Nếu trúng cache (cache hit), Connector sẽ tải các khối KV cache về và nạp vào bộ đệm của GPU.
-*   **Store:** Nếu trượt cache (cache miss), sau khi GPU hoàn thành pha Prefill và tính ra KV Cache mới, Connector sẽ gửi các khối này lên LMCache bằng hàm `store()` để lưu trữ cho lần truy vấn sau.
+Trong lớp `LMCacheEngine` tại [lmcache/v1/cache_engine.py](file:///Users/admin/TuanDung/repos/LMCache/lmcache/v1/cache_engine.py), việc thiết lập các phân tầng lưu trữ không diễn ra ngay trong hàm khởi dựng `__init__`, mà được trì hoãn đến giai đoạn gọi hàm `post_init()`.
 
-### B. LMCache Cache Engine (`lmcache/v1/cache_engine.py`)
-Là bộ não điều phối toàn bộ logic của LMCache.
-*   **Metadata Management:** Quản lý mối quan hệ giữa danh sách các token (token IDs) và vị trí của các khối cache tương ứng trong bộ nhớ.
-*   **Token Database (`lmcache/v1/token_database.py`):** Cung cấp cấu trúc dữ liệu lưu trữ cây tiền tố (Prefix Tree / Trie) và bản đồ tra cứu (Lookup Maps) để nhanh chóng xác định xem một chuỗi token có khối cache tương ứng hay không.
-*   **Memory Allocator (`lmcache/v1/lazy_memory_allocator.py`):** Quản lý cấp phát bộ nhớ đệm tạm thời khi thực hiện serialization/deserialization hoặc trung chuyển cache để tránh việc phân mảnh và overhead do cấp phát bộ nhớ liên tục trong Python.
+Hàm `post_init` thực hiện khởi tạo đối tượng `StorageManager` quản lý dòng dữ liệu vật lý:
 
-### C. LMCache Storage Backend (`lmcache/v1/storage_backend`)
-Lớp chịu trách nhiệm lưu trữ vật lý các khối KV Cache và định hình các thuộc tính hiệu năng của LMCache. Tất cả các backend đều phải cài đặt giao diện kế thừa từ lớp trừu tượng `abstract_backend.py`.
-*   **`local_cpu_backend.py`:** Lưu cache trên RAM của CPU máy chủ. Đây là phân tầng lưu trữ nhanh nhất ngoài GPU VRAM, truy xuất qua PCIe bus.
-*   **`local_disk_backend.py`:** Lưu cache trên ổ cứng cục bộ (NVMe SSD). Tốc độ chậm hơn RAM nhưng dung lượng lưu trữ cực kỳ lớn.
-*   **`remote_backend.py`:** Lưu cache trên các dịch vụ phân tán từ xa như Redis, MinIO, S3. Cho phép chia sẻ cache giữa các máy chủ khác nhau trong cụm.
-*   **`p2p_backend.py`:** Cơ chế chia sẻ ngang hàng trực tiếp giữa các tiến trình Serving Engine đang chạy song song, giảm tải cho bộ lưu trữ trung tâm.
+```python
+    def post_init(self, **kwargs) -> None:
+        if not self.post_inited:
+            logger.info("Post initializing LMCacheEngine")
+            # ... đoạn mã kiểm tra worker IDs ...
+            if (
+                self.lmcache_worker is not None
+                or self.use_layerwise
+                or not self.save_only_first_rank
+                or self.metadata.is_first_rank()
+                # ...
+            ):
+                # Khởi tạo StorageManager kết nối với các Storage Backends
+                self.storage_manager = StorageManager(
+                    self.config,
+                    self.metadata,
+                    event_manager=self.event_manager,
+                    lmcache_worker=self.lmcache_worker,
+                    async_lookup_server=async_lookup_server,
+                )
+            self.post_inited = True
+```
+
+`StorageManager` (nằm ở [lmcache/v1/storage_backend/storage_manager.py](file:///Users/admin/TuanDung/repos/LMCache/lmcache/v1/storage_backend/storage_manager.py)) chịu trách nhiệm làm việc với các backend thô như `LocalCPUBackend`, `LocalDiskBackend`, và `RemoteBackend` để thực thi lệnh đọc ghi dữ liệu thô.
 
 ---
 
-## 3. Khảo sát luồng xử lý lưu trữ và truy vấn (Control Flow)
+## 5. Checklist tích hợp LMCache vào Serving Engine
 
-Khi một request đến hệ thống, luồng xử lý diễn ra như sau:
+Trước khi khởi chạy hệ thống phục vụ tích hợp LMCache, kỹ sư serving cần kiểm tra cấu hình sau:
 
-```
-[vLLM Engine]              [LMCache Connector]             [Cache Engine]        [Storage Backend]
-      │                             │                             │                      │
-      │── 1. Gửi request ──────────>│                             │                      │
-      │   (prompt tokens)           │── 2. Kiểm tra cache hit ───>│                      │
-      │                             │      (Token Hash)           │── 3. Query backend ─>│
-      │                             │                             │◄── 4. Cache Hit ─────│
-      │◄── 5. Trả về KV Cache ──────│◄── 6. Trả về KV Cache ──────│                      │
-      │   (Inject to GPU VRAM)      │                             │                      │
-```
-
-Nếu trượt cache (cache miss):
-*   GPU tự tính toán KV Cache (Prefill phase).
-*   Connector gửi KV Cache vừa tính toán tới LMCache Engine.
-*   LMCache Engine ghi nhận vào `TokenDatabase`, đồng thời đẩy bất đồng bộ (async) xuống các lớp `StorageBackend` đã được cấu hình (ví dụ: vừa ghi vào CPU RAM cục bộ, vừa đẩy lên Redis từ xa).
-
-Trong bài học sau, chúng ta sẽ khảo sát chi tiết cách LMCache quản lý bộ nhớ phân cấp và cơ chế nén dữ liệu để truyền tải KV cache với băng thông tối ưu nhất.
+* [ ] **Xác nhận cấu hình công cụ phục vụ**: Đảm bảo phiên bản vLLM hoặc SGLang tương thích với lớp adapter của LMCache.
+* [ ] **Cấu hình biến môi trường**: Thiết lập đúng đường dẫn file cấu hình YAML qua biến môi trường `LMCACHE_CONFIG_FILE`.
+* [ ] **Xác thực cổng mạng**: Đảm bảo các tiến trình engine có thể kết nối đến máy chủ Redis/Object Storage trung tâm (nếu dùng `RemoteBackend`).
+* [ ] **Giới hạn tài nguyên CPU**: Kiểm tra dung lượng RAM tối đa cho phép lưu trữ cache trên máy chủ để cấu hình đúng tham số bộ nhớ trong LMCache.
+* [ ] **Đo lường Latency Baseline**: Ghi lại thời gian phản hồi TTFT của hệ thống trước khi bật LMCache để đánh giá mức độ cải thiện hiệu năng thực tế.
