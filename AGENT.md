@@ -19,6 +19,11 @@ This file is the operating manual for future agents. Treat it as the stable sour
   - `docs/lesson_2_hierarchical_storage.md`: storage layers and memory operations.
   - `docs/lesson_3_prefill_decode_disaggregation.md`: prefill-decode disaggregation.
   - `docs/lesson_4_vllm_sglang_integration.md`: integration adapters and multi-process configurations.
+  - `docs/case_studies/`: folder containing real-world case studies.
+    - `docs/case_studies/roadmap_case_studies.md`: case studies overview.
+    - `docs/case_studies/case_0_chatbot_multi_round.md`: multi-round chatbot case study.
+    - `docs/case_studies/case_1_rag_at_scale.md`: enterprise RAG serving case study.
+    - `docs/case_studies/case_2_prefill_decode_disaggregation.md`: disaggregated serving case study.
 - `src/`: Docusaurus landing page and styling.
 - `static/`: public static assets and `robots.txt`.
 - `.github/workflows/`: CI and GitHub Pages deployment workflow.
